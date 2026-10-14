@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Trip Expense Ledger</title>
+<meta name="description" content="Business trip expenses in any currency, exact to the smallest unit. Works offline.">
+<meta name="theme-color" content="#1d6b57">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div>
+      <h1>Trip Expense Ledger</h1>
+      <p class="sub">Business trip spending in any currency, kept to the smallest unit of each one.</p>
+    </div>
+    <div class="top-right">
+      <div class="trip-bar">
+        <label for="tripSelect">Trip</label>
+        <select id="tripSelect"></select>
+        <button id="newTripBtn" class="btn" type="button">New trip</button>
+      </div>
+      <button class="sync" id="syncChip" type="button" data-state="idle" aria-label="Sync and account"><span class="dot"></span><span id="syncText">Starting…</span></button>
+    </div>
+  </header>
+
+  <div id="updateBanner" class="banner" hidden><span>A new version of the app is ready.</span><button class="btn small" type="button" id="updateBtn">Update now</button></div>
+  <div id="banner" class="banner" hidden></div>
+
+  <section id="tripFormPanel" class="panel" hidden aria-labelledby="tripFormTitle">
+    <h2 id="tripFormTitle">New trip</h2>
+    <form id="tripForm" novalidate class="stack" style="gap:12px">
+      <div class="row">
+        <div class="field"><label for="tName">Trip name</label><input id="tName" required maxlength="120" placeholder="e.g. Partner visits, Singapore"><p class="err" id="tNameErr"></p></div>
+        <div class="field"><label for="tDest">Destination(s)</label><input id="tDest" maxlength="160" placeholder="e.g. Singapore, Kuala Lumpur"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label for="tStart">Start date</label><input id="tStart" type="date" required></div>
+        <div class="field"><label for="tEnd">End date</label><input id="tEnd" type="date" required><p class="err" id="tDateErr"></p></div>
+        <div class="field"><label for="tBase">Home currency</label><select id="tBase"></select><p class="hint" id="tBaseHint">Every expense is converted into this currency for the trip total.</p></div>
+      </div>
+      <div class="field"><label for="tPurpose">Purpose (optional)</label><input id="tPurpose" maxlength="240" placeholder="e.g. School partnership meetings"></div>
+      <div class="actions">
+        <button class="btn primary" type="submit" id="tSave">Create trip</button>
+        <button class="btn" type="button" id="tCancel">Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="loading" class="empty"><p>Opening your ledger…</p></section>
+
+  <section id="emptyState" class="empty" hidden>
+    <h2>No trips yet</h2>
+    <p>Create a trip, choose your home currency, then log each expense in whatever currency you paid. Everything is saved on this device first, so it works without a connection, and syncs to your other devices when you're online.</p>
+    <button class="btn primary" type="button" id="emptyNewTrip">Create your first trip</button>
+  </section>
+
+  <main id="tripView" class="stack" hidden>
+    <section class="trip-head">
+      <div class="stack" style="gap:4px">
+        <h2 id="tvName"></h2>
+        <div class="meta" id="tvMeta"></div>
+      </div>
+      <div class="actions">
+        <button class="btn small" type="button" id="editTripBtn">Edit trip</button>
+        <button class="btn small danger" type="button" id="delTripBtn">Delete trip</button>
+      </div>
+    </section>
+
+    <section class="tiles" id="tiles" aria-label="Trip totals"></section>
+
+    <div class="work">
+      <section class="panel" aria-labelledby="xFormTitle">
+        <h2 id="xFormTitle">Add expense</h2>
+        <form id="xForm" novalidate class="stack" style="gap:12px">
+          <div class="row">
+            <div class="field"><label for="xDate">Date</label><input id="xDate" type="date" required><p class="err" id="xDateErr"></p></div>
+            <div class="field"><label for="xCat">Category</label><select id="xCat"></select></div>
+          </div>
+          <div class="field"><label for="xDesc">Description</label><input id="xDesc" required maxlength="160" placeholder="e.g. Taxi airport to hotel"><p class="err" id="xDescErr"></p></div>
+          <div class="field"><label for="xMerchant">Merchant (optional)</label><input id="xMerchant" maxlength="120"></div>
+          <div class="field">
+            <span class="lbl" id="xAmtLbl">Amount paid</span>
+            <div class="amount-row">
+              <input id="xAmount" inputmode="decimal" autocomplete="off" aria-labelledby="xAmtLbl" placeholder="0.00">
+              <select id="xCur" aria-label="Currency paid"></select>
+            </div>
+            <p class="hint" id="xAmtHint"></p>
+            <p class="err" id="xAmtErr"></p>
+          </div>
+          <div class="field" id="rateField">
+            <label for="xRate" id="xRateLbl">Exchange rate</label>
+            <input id="xRate" inputmode="decimal" autocomplete="off" placeholder="e.g. 12650.75">
+            <p class="hint">Use the rate on your card statement or receipt. Up to 12 decimal places.</p>
+            <p class="err" id="xRateErr"></p>
+          </div>
+          <div class="preview" id="xPreview" aria-live="polite"></div>
+          <div class="field"><label for="xPay">Paid with</label><select id="xPay"></select></div>
+          <div class="checks">
+            <label><input type="checkbox" id="xReimb"> Reimbursable to me</label>
+            <label><input type="checkbox" id="xReceipt"> Receipt kept</label>
+          </div>
+          <div class="field">
+            <span class="lbl">Receipt photos</span>
+            <div class="pick">
+              <label class="btn small cam-only" for="xCamera">Take photo</label>
+              <label class="btn small" for="xFiles">Attach photo or PDF</label>
+              <input type="file" id="xCamera" accept="image/*" capture="environment" hidden>
+              <input type="file" id="xFiles" accept="image/*,application/pdf" multiple hidden>
+            </div>
+            <div class="thumbs" id="xThumbs"></div>
+            <p class="hint">Saved on this device straight away, uploaded when you're online.</p>
+            <p class="err" id="xFileErr"></p>
+          </div>
+          <div class="field"><label for="xNotes">Notes (optional)</label><textarea id="xNotes" maxlength="1000"></textarea></div>
+          <div class="actions">
+            <button class="btn primary" type="submit" id="xSave">Add expense</button>
+            <button class="btn" type="button" id="xCancel" hidden>Cancel edit</button>
+          </div>
+        </form>
+      </section>
+
+      <div class="stack">
+        <section class="panel" aria-labelledby="listTitle">
+          <div class="list-head">
+            <h3 id="listTitle">Expenses</h3>
+            <button class="btn small" type="button" id="exportBtn">Export CSV</button>
+          </div>
+          <div class="filters">
+            <input class="search" id="fSearch" type="search" placeholder="Search description, merchant, notes" aria-label="Search expenses">
+            <select id="fCat" aria-label="Filter by category"></select>
+            <select id="fCur" aria-label="Filter by currency"></select>
+          </div>
+          <div class="list" id="list"></div>
+        </section>
+        <section class="panel" aria-labelledby="byCurTitle">
+          <h3 id="byCurTitle">By currency paid</h3>
+          <div class="scroll" id="byCur"></div>
+        </section>
+        <section class="panel" aria-labelledby="byCatTitle">
+          <h3 id="byCatTitle">By category</h3>
+          <div class="bars" id="byCat"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Account & sync sheet -->
+<div class="sheet-bg" id="sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <div class="head"><h2 id="sheetTitle">Sync &amp; account</h2><button class="btn small" type="button" id="sheetClose">Close</button></div>
+    <dl class="kv" id="syncInfo"></dl>
+    <p class="err" id="syncErr"></p>
+    <div class="actions" id="syncActions"><button class="btn primary small" type="button" id="syncNowBtn">Sync now</button></div>
+
+    <section id="signInSec">
+      <h3>Sign in to sync</h3>
+      <p class="hint">Use the account you created in Supabase (README, step 3). Sign in once on each device.</p>
+      <form id="signInForm" novalidate class="stack" style="gap:10px">
+        <div class="field"><label for="siEmail">Email</label><input id="siEmail" type="email" autocomplete="username" required></div>
+        <div class="field"><label for="siPass">Password</label><input id="siPass" type="password" autocomplete="current-password" required></div>
+        <p class="err" id="siErr"></p>
+        <div class="actions"><button class="btn primary" type="submit" id="siBtn">Sign in</button></div>
+      </form>
+    </section>
+
+    <section id="signedInSec" hidden>
+      <h3>Signed in</h3>
+      <p id="whoami" class="mono"></p>
+      <div class="actions"><button class="btn small" type="button" id="signOutBtn">Sign out on this device</button></div>
+      <p class="hint">Signing out keeps your data on this device. Changes made while signed out sync after you sign in again.</p>
+    </section>
+
+    <section id="configSec">
+      <h3>Supabase connection</h3>
+      <p class="hint" id="configHint">Paste the Project URL and publishable key from Supabase (README, step 2).</p>
+      <form id="configForm" novalidate class="stack" style="gap:10px">
+        <div class="field"><label for="cfUrl">Project URL</label><input id="cfUrl" inputmode="url" placeholder="https://xxxx.supabase.co"></div>
+        <div class="field"><label for="cfKey">Publishable key</label><input id="cfKey" autocomplete="off" placeholder="sb_publishable_…"></div>
+        <p class="err" id="cfErr"></p>
+        <div class="actions"><button class="btn small" type="submit">Save connection</button></div>
+      </form>
+    </section>
+
+    <section>
+      <h3>This device</h3>
+      <dl class="kv" id="deviceInfo"></dl>
+    </section>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden role="status"></div>
+<div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Receipt">
+  <img id="lbImg" alt="Receipt photo">
+  <p class="lb-msg" id="lbMsg" hidden></p>
+  <div class="bar2">
+    <button class="btn small" type="button" id="lbPrev">Previous</button>
+    <span id="lbCount"></span>
+    <button class="btn small" type="button" id="lbNext">Next</button>
+    <a class="btn small" id="lbOpen" target="_blank" rel="noopener">Open full size</a>
+    <button class="btn small" type="button" id="lbClose">Close</button>
+  </div>
+</div>
+
+<script src="vendor/supabase-2.117.2.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
