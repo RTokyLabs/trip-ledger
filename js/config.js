@@ -3,6 +3,6 @@
 // The publishable (anon) key is meant to be public: your data is protected by the
 // row-level security rules in supabase/setup.sql, and by your password.
 export const CONFIG = {
-  supabaseUrl: "https://zhsayzrptsrhsyzzbqty.supabase.co"
+  supabaseUrl: "https://zhsayzrptsrhsyzzbqty.supabase.co",
   supabaseKey: "sb_publishable_JR_v49xcSrKQirqnxTB3LQ_uiVXRdiC"
 };
