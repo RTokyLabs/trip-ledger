@@ -1,6 +1,6 @@
 // Service worker: keeps a copy of the app on the device so it opens without internet.
 // When you change any app file, bump VERSION so devices pick up the new copy.
-const VERSION = "v1.0.0";
+const VERSION = "v1.1.0";
 const CACHE = "trip-ledger-" + VERSION;
 const FILES = [
   "./",

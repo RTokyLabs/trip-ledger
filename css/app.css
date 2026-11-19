@@ -115,6 +115,21 @@ tr:last-child td{border-bottom:none}
 .empty{background:var(--surface);border:1px dashed var(--line);border-radius:var(--r);padding:32px 20px;text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center}
 .empty p{max-width:52ch;color:var(--muted)}
 
+/* People on a trip */
+.members{display:flex;flex-direction:column}
+.member{display:grid;grid-template-columns:minmax(0,1fr);gap:8px 12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+@media (min-width:640px){.member{grid-template-columns:minmax(0,1fr) auto}}
+.member:first-child{border-top:none}
+.member .who{display:flex;flex-direction:column;min-width:0}
+.member .who .em{font-size:.8rem;color:var(--muted);overflow-wrap:anywhere}
+.member .ops{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-start;align-items:center}
+@media (min-width:640px){.member .ops{justify-content:flex-end}}
+.member input{min-height:36px;padding:4px 8px;max-width:180px}
+.add-member{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) auto;gap:8px;align-items:end;border-top:1px solid var(--line);padding-top:12px}
+@media (max-width:560px){.add-member{grid-template-columns:minmax(0,1fr)}}
+.tag.muted{background:var(--sunk);color:var(--muted)}
+#byPerson tfoot td{font-weight:600;border-top:1px solid var(--line)}
+
 /* Receipts */
 .pick{display:flex;gap:8px;flex-wrap:wrap}
 @media (hover:hover) and (pointer:fine){.cam-only{display:none!important}}

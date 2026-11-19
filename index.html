@@ -73,6 +73,18 @@
 
     <section class="tiles" id="tiles" aria-label="Trip totals"></section>
 
+    <section class="panel" id="peoplePanel" aria-labelledby="peopleTitle">
+      <div class="list-head"><h3 id="peopleTitle">People on this trip</h3><span class="hint" id="peopleHint"></span></div>
+      <div class="scroll" id="byPerson"></div>
+      <div class="members" id="memberList"></div>
+      <form id="addMemberForm" class="add-member" novalidate hidden>
+        <div class="field"><label for="mName">Name in reports</label><input id="mName" maxlength="60" placeholder="e.g. Andi"></div>
+        <div class="field"><label for="mEmail">Their login email</label><input id="mEmail" type="email" autocomplete="off" placeholder="name@example.com"></div>
+        <button class="btn" type="submit" id="mAdd">Add to trip</button>
+      </form>
+      <p class="err" id="memberErr"></p>
+    </section>
+
     <div class="work">
       <section class="panel" aria-labelledby="xFormTitle">
         <h2 id="xFormTitle">Add expense</h2>
@@ -99,9 +111,13 @@
             <p class="err" id="xRateErr"></p>
           </div>
           <div class="preview" id="xPreview" aria-live="polite"></div>
+          <div class="row" id="peopleFields" hidden>
+            <div class="field"><label for="xPaidBy">Paid by</label><select id="xPaidBy"></select></div>
+            <div class="field"><label for="xFor">For</label><select id="xFor"></select></div>
+          </div>
           <div class="field"><label for="xPay">Paid with</label><select id="xPay"></select></div>
           <div class="checks">
-            <label><input type="checkbox" id="xReimb"> Reimbursable to me</label>
+            <label><input type="checkbox" id="xReimb"> <span id="xReimbLbl">Reimbursable to me</span></label>
             <label><input type="checkbox" id="xReceipt"> Receipt kept</label>
           </div>
           <div class="field">
@@ -174,6 +190,13 @@
       <p id="whoami" class="mono"></p>
       <div class="actions"><button class="btn small" type="button" id="signOutBtn">Sign out on this device</button></div>
       <p class="hint">Signing out keeps your data on this device. Changes made while signed out sync after you sign in again.</p>
+      <form id="pwForm" novalidate class="stack" style="gap:10px">
+        <h3>Change password</h3>
+        <div class="field"><label for="pwNew">New password</label><input id="pwNew" type="password" autocomplete="new-password" minlength="8"></div>
+        <div class="field"><label for="pwNew2">Type it again</label><input id="pwNew2" type="password" autocomplete="new-password"></div>
+        <p class="err" id="pwErr"></p>
+        <div class="actions"><button class="btn small" type="submit" id="pwBtn">Change password</button></div>
+      </form>
     </section>
 
     <section id="configSec">

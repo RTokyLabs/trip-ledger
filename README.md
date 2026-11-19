@@ -8,7 +8,8 @@ internet**, and syncs to your laptop when you're online.
   photos on a plane or abroad without data.
 - When a connection comes back, changes upload automatically and appear on your other
   devices. If the same expense was edited on two devices, the most recent edit wins.
-- Data goes to your own free Supabase database. Only your account can read it.
+- Data goes to your own free Supabase database. Only your account can read it, plus
+  anyone you add to a specific trip (see *Sharing a trip with a colleague*).
 
 Setup takes about 30 minutes, once. You need: your GitHub account, a computer with
 Chrome, and your Android phone.
@@ -28,6 +29,7 @@ Chrome, and your Android phone.
 3. In the left menu click **SQL Editor**, then **New query**.
 4. Open the file `supabase/setup.sql` from this folder in a text editor, copy
    **all** of it, paste it into the SQL Editor, and click **Run**.
+   Then do the same with `supabase/02-shared-trips.sql` (new query, paste, **Run**).
    You should see "Success. No rows returned".
 
 ## Step 2 — Copy your two connection details
@@ -102,6 +104,48 @@ the right end of the address bar.
 
 ---
 
+## Sharing a trip with a colleague
+
+One trip, one set of accounts, each person with their own login.
+
+**Who can do what**
+- The person who creates the trip is its **owner**. Only the owner can edit or delete the
+  trip and add or remove people. The owner can also correct anyone's expenses.
+- People added to a trip can see all its expenses and receipt photos, and add their own.
+  They can edit or delete only the expenses they entered.
+- A colleague sees only the trips you share with them, nothing else of yours.
+
+**One-time database upgrade** (only if you set up the app before shared trips existed):
+Supabase → **SQL Editor** → **New query** → paste all of `supabase/02-shared-trips.sql` →
+**Run**. You should see "Success. No rows returned". Your existing data is kept.
+
+**Add a colleague**
+1. Create their login: Supabase → **Authentication → Users → Add user → Create new user**,
+   their email and a temporary password, tick **Auto Confirm User**.
+2. In the app, open the trip. Under **People on this trip**, enter their name (as it should
+   appear in the accounts) and their login email, then tap **Add to trip**.
+3. Send them the app address and their temporary password. On their phone they open the
+   address in Chrome, install it, sign in, and change the password under
+   **Sync & account → Change password**.
+
+**Entering expenses on a shared trip**
+- **Paid by**: who paid. Defaults to you.
+- **For**: whom the expense was for. Defaults to whoever paid. Choose **Everyone (shared
+  equally)** for things like a shared taxi or room.
+- **Reimbursable to whoever paid**: tick it when the payer used their own money.
+
+**The combined accounts**
+- The trip total covers everyone's expenses.
+- **People on this trip** shows, per person: what they paid, what is owed back to them,
+  and what was spent on them (their own expenses plus an equal share of shared ones).
+  Shared amounts are split exactly to the smallest currency unit; if one doesn't divide
+  evenly, the leftover unit goes to the first person listed. Each column adds up to the
+  trip total.
+- **Export CSV** includes Paid by, For and Entered by columns and a per-person summary.
+
+**Removing someone** keeps every expense they entered in the accounts; they just lose
+access to the trip.
+
 ## Everyday use
 
 - **Status button (top right)**: tells you whether you're synced, offline, or how many
@@ -155,3 +199,4 @@ home currency (halves round away from zero). No floating-point rounding anywhere
 | `manifest.webmanifest`, `icons/` | Makes it installable as a phone app |
 | `vendor/supabase-2.117.2.js` | Supabase's official browser library (kept locally so it works offline) |
 | `supabase/setup.sql` | Database tables, the most-recent-edit-wins rule, and access rules |
+| `supabase/02-shared-trips.sql` | Shared trips: people on each trip, who may change what, shared receipts |

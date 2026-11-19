@@ -1,7 +1,7 @@
 // Trip Expense Ledger — user interface.
 // All reads and writes go to local storage (db.js); sync.js handles the server.
 
-import { CURRENCIES, COMMON, CUR, parseAmount, parseRate, convert, fmt, money, unitText } from "./money.js";
+import { CURRENCIES, COMMON, CUR, parseAmount, parseRate, convert, fmt, money, unitText, splitEvenly } from "./money.js";
 import * as store from "./db.js";
 import * as sync from "./sync.js";
 
@@ -41,14 +41,50 @@ function armConfirm(btn, label, action){
 }
 
 /* ---------- State ---------- */
-const state = { trips: [], expenses: [], loaded: false, tripId: lsGet("tel.trip"), editingTripId: null, editingExpenseId: null };
+const state = { trips: [], expenses: [], members: {}, me: null, loaded: false, tripId: lsGet("tel.trip"), editingTripId: null, editingExpenseId: null };
 
 async function load(){
-  const [t, e] = await Promise.all([store.getAll("trips"), store.getAll("expenses")]);
+  const [t, e, members, acct] = await Promise.all([store.getAll("trips"), store.getAll("expenses"), sync.getMembers(), sync.account()]);
   state.trips = t.filter(x => !x.deleted);
   state.expenses = e.filter(x => !x.deleted);
+  state.members = members || {};
+  state.me = acct?.id || null;
   state.loaded = true;
   render();
+}
+
+/* ---------- People & permissions ---------- */
+// A trip with no owner recorded was created on this device before signing in: it's yours.
+const isOwner = t => !t.ownerId || t.ownerId === state.me;
+/** People on a trip, owner first. Before the first sync it's just you. */
+function tripPeople(t){
+  const list = state.members[t.id] || [];
+  return list.length ? list : [{ userId: t.ownerId || state.me || "me", name: "", email: "", role: "owner" }];
+}
+const isShared = t => tripPeople(t).length > 1;
+function plainName(t, id){
+  const m = (state.members[t.id] || []).find(m => m.userId === id);
+  if (m) return m.name || m.email || "Someone";
+  return id && id === (t.ownerId || state.me || "me") && !(state.members[t.id] || []).length ? "You" : "Former member";
+}
+const displayName = (t, id) => plainName(t, id) + (id && id === state.me && plainName(t, id) !== "You" ? " (you)" : "");
+const payerOf = (t, x) => x.paidBy || x.createdBy || t.ownerId || state.me || "me";
+const canEditExpense = (t, x) => isOwner(t) || !x.createdBy || x.createdBy === state.me;
+
+/** Per person: what they paid, what is owed back to them, and what was spent on them
+ *  (their own expenses plus an equal share of shared ones, split to the exact smallest unit). */
+function personTotals(t, xs){
+  const people = tripPeople(t), ids = people.map(p => p.userId);
+  const rows = new Map(ids.map(id => [id, { paid: 0n, owed: 0n, spent: 0n }]));
+  const row = id => { if (!rows.has(id)) rows.set(id, { paid: 0n, owed: 0n, spent: 0n }); return rows.get(id); };
+  for (const x of xs){
+    const b = BigInt(x.baseMinor), payer = payerOf(t, x);
+    row(payer).paid += b;
+    if (x.reimbursable) row(payer).owed += b;
+    if (x.spentFor === "shared") splitEvenly(b, ids.length).forEach((v, i) => { row(ids[i]).spent += v; });
+    else row(x.spentFor || payer).spent += b;
+  }
+  return rows;
 }
 /** Save a record locally, mark it for upload, and ask for a sync. */
 async function saveLocal(kind, rec){
@@ -76,7 +112,7 @@ function render(){
   const trips = [...state.trips].sort((a,b) => (b.startDate||"").localeCompare(a.startDate||""));
   if (!currentTrip() && trips.length) state.tripId = trips[0].id;
   const sel = $("tripSelect");
-  sel.innerHTML = trips.length ? trips.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("") : `<option value="">No trips</option>`;
+  sel.innerHTML = trips.length ? trips.map(t => `<option value="${esc(t.id)}">${esc(t.name)}${isOwner(t) ? "" : " · shared with you"}</option>`).join("") : `<option value="">No trips</option>`;
   sel.value = state.tripId || ""; sel.disabled = !trips.length;
   const trip = currentTrip();
   $("emptyState").hidden = !!trip || !$("tripFormPanel").hidden;
@@ -86,6 +122,7 @@ function render(){
   const xs = tripExpenses(trip.id);
   renderTripHead(trip);
   renderTiles(trip, xs);
+  renderPeople(trip, xs);
   renderByCurrency(trip, xs);
   renderByCategory(trip, xs);
   renderFilters(xs);
@@ -99,16 +136,47 @@ function renderTripHead(t){
   if (t.destination) bits.push(esc(t.destination));
   if (t.startDate) bits.push(`${longDate(t.startDate)} – ${longDate(t.endDate)}`);
   bits.push(`Home currency <span class="tag">${esc(t.baseCurrency)}</span>`);
+  if (!isOwner(t)) bits.push(`Shared by ${esc(plainName(t, t.ownerId))}`);
   if (t.purpose) bits.push(esc(t.purpose));
   $("tvMeta").innerHTML = bits.map(b => `<span>${b}</span>`).join("");
+  $("editTripBtn").hidden = $("delTripBtn").hidden = !isOwner(t);
+}
+
+function renderPeople(t, xs){
+  const owner = isOwner(t), people = tripPeople(t), shared = isShared(t);
+  const signedIn = !!state.me;
+  // Per-person totals: only meaningful once more than one person is on the trip.
+  if (shared && xs.length){
+    const totals = personTotals(t, xs), be = t.baseExp;
+    const ids = [...totals.keys()];
+    const sum = k => ids.reduce((s, id) => s + totals.get(id)[k], 0n);
+    $("byPerson").innerHTML = `<table><thead><tr><th>Person</th><th class="r">Paid</th><th class="r">Owed back to them</th><th class="r">Spent on them</th></tr></thead><tbody>` +
+      ids.map(id => { const r = totals.get(id); return `<tr><td>${esc(displayName(t, id))}</td><td class="r num">${fmt(r.paid, be)}</td><td class="r num">${fmt(r.owed, be)}</td><td class="r num">${fmt(r.spent, be)}</td></tr>`; }).join("") +
+      `</tbody><tfoot><tr><td>Total · ${esc(t.baseCurrency)}</td><td class="r num">${fmt(sum("paid"), be)}</td><td class="r num">${fmt(sum("owed"), be)}</td><td class="r num">${fmt(sum("spent"), be)}</td></tr></tfoot></table>` +
+      `<p class="hint">"Spent on them" counts their own expenses plus an equal share of shared ones. When a shared cost doesn't divide exactly, the leftover smallest unit goes to the first person listed.</p>`;
+  } else $("byPerson").innerHTML = "";
+  $("peopleHint").textContent = shared ? `${people.length} people · one set of accounts` : "";
+  const list = state.members[t.id] || [];
+  $("memberList").innerHTML = list.length ? list.map(m => {
+    const self = m.userId === state.me;
+    const name = owner
+      ? `<input value="${esc(m.name)}" maxlength="60" aria-label="Name in reports for ${esc(m.email)}" data-name-for="${esc(m.userId)}">`
+      : `<strong>${esc(m.name || m.email)}${self ? " (you)" : ""}</strong>`;
+    const ops = [];
+    if (owner) ops.push(`<button class="btn small" type="button" data-rename="${esc(m.userId)}">Save name</button>`);
+    if (owner && m.role !== "owner") ops.push(`<button class="btn small danger" type="button" data-remove="${esc(m.userId)}">Remove</button>`);
+    return `<div class="member"><div class="who">${name}<span class="em">${esc(m.email)}${self && owner ? " · you" : ""}</span></div><div class="ops"><span class="tag${m.role === "owner" ? "" : " muted"}">${m.role === "owner" ? "Owner" : "Can add expenses"}</span>${ops.join("")}</div></div>`;
+  }).join("") : `<p class="muted">${signedIn ? "Only you are on this trip so far." : "Sign in (button at the top right) to share this trip with a colleague."}</p>`;
+  $("addMemberForm").hidden = !(owner && signedIn);
 }
 
 function renderTiles(t, xs){
   const be = t.baseExp, bc = esc(t.baseCurrency);
   let total = 0n, mine = 0n, other = 0n, noReceipt = 0, withScan = 0;
+  const shared = isShared(t), me = state.me;
   for (const x of xs){
     const b = BigInt(x.baseMinor); total += b;
-    if (x.reimbursable) mine += b; else other += b;
+    if (x.reimbursable){ if (!shared || payerOf(t, x) === me) mine += b; } else other += b;
     if (!x.receipt) noReceipt++;
     if ((x.receipts || []).length) withScan++;
   }
@@ -116,7 +184,7 @@ function renderTiles(t, xs){
   const tile = (k, v, s, attn) => `<div class="tile${attn ? " attn" : ""}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
   $("tiles").innerHTML =
     tile("Trip total", `<small>${bc}</small>${fmt(total, be)}`, `${xs.length} expense${xs.length===1?"":"s"} in ${curCount} currenc${curCount===1?"y":"ies"}`) +
-    tile("Owed back to you", `<small>${bc}</small>${fmt(mine, be)}`, "Expenses marked reimbursable") +
+    tile("Owed back to you", `<small>${bc}</small>${fmt(mine, be)}`, shared ? "Reimbursable expenses you paid" : "Expenses marked reimbursable") +
     tile("Not reimbursable", `<small>${bc}</small>${fmt(other, be)}`, "Company-paid or non-claimable") +
     tile("Receipts", `${xs.length - noReceipt} / ${xs.length}`, (noReceipt ? `${noReceipt} missing a receipt` : "All receipts kept") + ` · ${withScan} with a scan`, noReceipt > 0);
 }
@@ -168,6 +236,12 @@ function renderList(t, xs){
   list.innerHTML = rows.map(x => {
     const same = x.currency === t.baseCurrency;
     const chips = [esc(x.category), esc(x.payment)];
+    if (isShared(t)){
+      const payer = payerOf(t, x);
+      chips.push(`Paid by ${esc(displayName(t, payer))}`);
+      chips.push(`For ${x.spentFor === "shared" ? "everyone (shared)" : esc(displayName(t, x.spentFor || payer))}`);
+      if (x.createdBy && x.createdBy !== payer) chips.push(`Entered by ${esc(displayName(t, x.createdBy))}`);
+    }
     if (x.merchant) chips.push(esc(x.merchant));
     if (x.reimbursable) chips.push("Reimbursable");
     if (!x.receipt) chips.push(`<span class="flag">No receipt</span>`);
@@ -178,7 +252,7 @@ function renderList(t, xs){
       <span class="date">${shortDate(x.date)}</span>
       <div style="min-width:0"><div class="desc">${esc(x.description)}</div><div class="chips">${chips.map(c => `<span>${c}</span>`).join("")}</div>${x.notes ? `<div class="chips"><span>${esc(x.notes)}</span></div>` : ""}${rc.length ? `<div class="thumbs">${rc.map((r,i) => thumbHtml(r, i, { sm: true, owner: x.id })).join("")}</div>` : ""}</div>
       <div class="amt"><div class="orig">${money(x.amountMinor, esc(x.currency), x.exp)}</div>${same ? "" : `<div class="base">${money(x.baseMinor, esc(t.baseCurrency), t.baseExp)}</div>`}</div>
-      <div class="ops"><button class="btn small" type="button" data-edit="${esc(x.id)}">Edit</button><button class="btn small danger" type="button" data-del="${esc(x.id)}">Delete</button></div>
+      <div class="ops">${canEditExpense(t, x) ? `<button class="btn small" type="button" data-edit="${esc(x.id)}">Edit</button><button class="btn small danger" type="button" data-del="${esc(x.id)}">Delete</button>` : `<span class="hint">Only ${esc(plainName(t, x.createdBy))} or the trip owner can change this</span>`}</div>
     </div>`;
   }).join("");
   hydrateThumbs(list);
@@ -188,10 +262,10 @@ function renderList(t, xs){
 // Files live in local storage as Blobs; object URLs are made on demand and reused.
 const urlCache = new Map();
 const isPdf = r => r.type === "application/pdf";
-async function fileUrl(id, type, { fetchIfMissing = false } = {}){
+async function fileUrl(id, type, { fetchIfMissing = false, path = null } = {}){
   if (urlCache.has(id)) return urlCache.get(id);
   let f = await store.get("files", id);
-  if (!f && fetchIfMissing) f = await sync.fetchFile(id, type);
+  if (!f && fetchIfMissing) f = await sync.fetchFile(id, type, path);
   if (!f) return null;
   const u = URL.createObjectURL(f.blob);
   urlCache.set(id, u);
@@ -265,8 +339,8 @@ async function discardUnsaved(){
 }
 
 /* ---------- Receipt viewer ---------- */
-const lb = { items: [], i: 0, last: null };
-function openViewer(items, i){ if (!items.length) return; lb.items = items; lb.i = i; lb.last = document.activeElement; showViewer(); }
+const lb = { items: [], i: 0, last: null, expense: null };
+function openViewer(items, i, expense = null){ if (!items.length) return; lb.items = items; lb.i = i; lb.expense = expense; lb.last = document.activeElement; showViewer(); }
 async function showViewer(){
   const r = lb.items[lb.i];
   $("lightbox").hidden = false;
@@ -275,7 +349,7 @@ async function showViewer(){
   $("lbImg").hidden = true; $("lbOpen").hidden = true;
   $("lbMsg").hidden = false; $("lbMsg").textContent = "Loading…";
   $("lbClose").focus();
-  const u = await fileUrl(r.id, r.type, { fetchIfMissing: true });
+  const u = await fileUrl(r.id, r.type, { fetchIfMissing: true, path: sync.receiptPath(r, lb.expense, state.me) });
   if (lb.items[lb.i] !== r) return;
   if (!u){ $("lbMsg").textContent = navigator.onLine ? "This receipt hasn't reached this device yet. Sync, then try again." : "This receipt is on another device. Connect to the internet to download it."; return; }
   $("lbOpen").href = u; $("lbOpen").hidden = false;
@@ -288,10 +362,30 @@ function closeViewer(){ $("lightbox").hidden = true; $("lbImg").removeAttribute(
 /* ---------- Expense form ---------- */
 let formTripId = null;
 function lastRate(tripId, cur){ const x = tripExpenses(tripId).find(e => e.currency === cur); return x ? x.rate : ""; }
+let formPeopleKey = "";
 function syncFormToTrip(t, xs){
-  if (formTripId === t.id){ updateFormHints(); return; }
+  const key = t.id + "|" + tripPeople(t).map(p => p.userId + ":" + p.name).join(",");
+  if (formTripId === t.id){ if (key !== formPeopleKey) fillPeopleSelects(t); updateFormHints(); return; }
   formTripId = t.id;
   resetExpenseForm(t, xs);
+}
+/** "Paid by" and "For" pickers; shown only when more than one person is on the trip. */
+function fillPeopleSelects(t, paidBy = null, spentFor = null){
+  formPeopleKey = t.id + "|" + tripPeople(t).map(p => p.userId + ":" + p.name).join(",");
+  const shared = isShared(t);
+  $("peopleFields").hidden = !shared;
+  $("xReimbLbl").textContent = shared ? "Reimbursable to whoever paid" : "Reimbursable to me";
+  if (!shared) return;
+  const people = tripPeople(t);
+  const keepPaid = paidBy ?? $("xPaidBy").value, keepFor = spentFor ?? $("xFor").value;
+  const opts = people.map(p => `<option value="${esc(p.userId)}">${esc(displayName(t, p.userId))}</option>`).join("");
+  $("xPaidBy").innerHTML = opts;
+  $("xFor").innerHTML = opts + `<option value="shared">Everyone (shared equally)</option>`;
+  const ids = people.map(p => p.userId);
+  const defPaid = ids.includes(state.me) ? state.me : ids[0];
+  $("xPaidBy").value = ids.includes(keepPaid) ? keepPaid : defPaid;
+  $("xPaidBy").dataset.prev = $("xPaidBy").value;
+  $("xFor").value = keepFor === "shared" || ids.includes(keepFor) ? keepFor : $("xPaidBy").value;
 }
 function resetExpenseForm(t, xs = tripExpenses(t.id)){
   state.editingExpenseId = null;
@@ -303,6 +397,7 @@ function resetExpenseForm(t, xs = tripExpenses(t.id)){
   $("xCur").value = lastCur;
   $("xRate").value = lastCur === t.baseCurrency ? "1" : lastRate(t.id, lastCur);
   $("xPay").value = "Company card";
+  fillPeopleSelects(t, "", "");
   $("xFormTitle").textContent = "Add expense"; $("xSave").textContent = "Add expense"; $("xCancel").hidden = true;
   clearErrs(); updateFormHints();
 }
@@ -332,6 +427,7 @@ async function fillExpenseForm(x){
   $("xDate").value = x.date; $("xCat").value = x.category; $("xDesc").value = x.description; $("xMerchant").value = x.merchant || "";
   $("xCur").value = x.currency; $("xAmount").value = fmt(x.amountMinor, x.exp, false); $("xRate").value = x.rate;
   $("xPay").value = x.payment; $("xReimb").checked = !!x.reimbursable; $("xReceipt").checked = !!x.receipt; $("xNotes").value = x.notes || "";
+  fillPeopleSelects(t, payerOf(t, x), x.spentFor || payerOf(t, x));
   $("xFormTitle").textContent = "Edit expense"; $("xSave").textContent = "Save changes"; $("xCancel").hidden = false;
   clearErrs(); updateFormHints(); renderList(t, tripExpenses(t.id));
   $("xFormTitle").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -354,6 +450,13 @@ async function submitExpense(ev){
   if (rx.busy > 0){ $("xFileErr").textContent = "Wait for the receipt to finish saving."; ok = false; }
   if (!ok) return;
   const existing = state.expenses.find(x => x.id === state.editingExpenseId);
+  if (existing && !canEditExpense(t, existing)){ $("xAmtErr").textContent = "Only the person who entered this expense or the trip owner can change it."; return; }
+  let paidBy = existing?.paidBy || null, spentFor = existing?.spentFor || null;
+  if (isShared(t)){
+    paidBy = $("xPaidBy").value || null;
+    const f = $("xFor").value;
+    spentFor = f === "shared" ? "shared" : (f && f !== paidBy ? f : null);
+  }
   const rec = {
     ...(existing || {}),
     id: existing ? existing.id : uuid(), tripId: t.id, date, category: $("xCat").value, description: desc,
@@ -361,7 +464,8 @@ async function submitExpense(ev){
     receipt: $("xReceipt").checked, notes: $("xNotes").value.trim(),
     currency: c.code, exp: c.exp, amountMinor: a.value.toString(),
     rate: r.text, baseCurrency: t.baseCurrency, baseExp: t.baseExp, baseMinor: convert(a.value, c.exp, r, t.baseExp).toString(),
-    receipts: rx.list.map(x => ({ id: x.id, type: x.type, name: x.name })),
+    receipts: rx.list.map(x => ({ id: x.id, type: x.type, name: x.name, ...(x.path ? { path: x.path } : {}) })),
+    createdBy: existing ? (existing.createdBy || state.me) : state.me, paidBy, spentFor,
     createdAt: existing ? existing.createdAt : nowIso(), deleted: false
   };
   const btn = $("xSave"); btn.disabled = true;
@@ -372,18 +476,19 @@ async function submitExpense(ev){
     await sync.deleteFiles(removed);
     toast(existing ? "Expense updated" : "Expense added");
     await load();
-    const keep = { cur: c.code, rate: r.text, date, pay: rec.payment };
+    const keep = { cur: c.code, rate: r.text, date, pay: rec.payment, paidBy: $("xPaidBy").value };
     resetExpenseForm(t);
-    if (!existing){ $("xCur").value = keep.cur; $("xRate").value = same ? "1" : keep.rate; $("xDate").value = keep.date; $("xPay").value = keep.pay; $("xReimb").checked = PERSONAL.has(keep.pay); updateFormHints(); }
+    if (!existing){ $("xCur").value = keep.cur; $("xRate").value = same ? "1" : keep.rate; $("xDate").value = keep.date; $("xPay").value = keep.pay; $("xReimb").checked = PERSONAL.has(keep.pay); fillPeopleSelects(t, keep.paidBy, keep.paidBy); updateFormHints(); } // "For" never carries over: a shared split must be chosen each time
   } catch (e) {
     $("xAmtErr").textContent = e?.name === "QuotaExceededError" ? "This device is out of storage space." : "Couldn't save on this device. Try again.";
   } finally { btn.disabled = false; }
 }
 async function deleteExpense(id){
   const x = state.expenses.find(x => x.id === id); if (!x) return;
+  if (!canEditExpense(currentTrip(), x)) return;
   if (state.editingExpenseId === id) resetExpenseForm(currentTrip());
   await saveLocal("expenses", { ...x, deleted: true, receipts: [] });
-  await sync.deleteFiles((x.receipts || []).map(r => r.id));
+  await sync.deleteFiles(x.receipts || []);
   toast("Expense deleted");
   await load();
 }
@@ -413,7 +518,8 @@ async function submitTrip(ev){
   if (!name || !s || !e || e < s) return;
   const existing = state.trips.find(t => t.id === state.editingTripId);
   const base = existing && $("tBase").disabled ? existing.baseCurrency : $("tBase").value;
-  const rec = { ...(existing || {}), id: existing ? existing.id : uuid(), name, destination: $("tDest").value.trim(),
+  if (existing && !isOwner(existing)) return;
+  const rec = { ...(existing || {}), id: existing ? existing.id : uuid(), ownerId: existing?.ownerId || state.me || null, name, destination: $("tDest").value.trim(),
     purpose: $("tPurpose").value.trim(), startDate: s, endDate: e, baseCurrency: base, baseExp: CUR[base].exp,
     createdAt: existing?.createdAt || nowIso(), deleted: false };
   const btn = $("tSave"); btn.disabled = true;
@@ -427,11 +533,11 @@ async function submitTrip(ev){
   finally { btn.disabled = false; }
 }
 async function deleteTrip(){
-  const t = currentTrip(); if (!t) return;
+  const t = currentTrip(); if (!t || !isOwner(t)) return;
   await discardUnsaved();
   const fileIds = [];
   for (const x of tripExpenses(t.id)){
-    fileIds.push(...(x.receipts || []).map(r => r.id));
+    fileIds.push(...(x.receipts || []));
     await saveLocal("expenses", { ...x, deleted: true, receipts: [] });
   }
   await saveLocal("trips", { ...t, deleted: true });
@@ -445,11 +551,26 @@ function exportCsv(){
   const t = currentTrip(); if (!t) return;
   const xs = tripExpenses(t.id).slice().reverse();
   const q = v => { const s = String(v ?? ""); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const head = ["Date","Category","Description","Merchant","Paid with","Currency","Amount",`Rate to ${t.baseCurrency}`,`Amount ${t.baseCurrency}`,"Reimbursable","Receipt kept","Receipt scans","Notes"];
-  const lines = [head.map(q).join(",")].concat(xs.map(x => [x.date, x.category, x.description, x.merchant, x.payment, x.currency,
+  const shared = isShared(t);
+  const who = shared ? ["Paid by","For","Entered by"] : [];
+  const head = ["Date","Category","Description","Merchant",...who,"Paid with","Currency","Amount",`Rate to ${t.baseCurrency}`,`Amount ${t.baseCurrency}`,"Reimbursable","Receipt kept","Receipt scans","Notes"];
+  const whoCells = x => {
+    if (!shared) return [];
+    const payer = payerOf(t, x);
+    return [plainName(t, payer), x.spentFor === "shared" ? "Shared" : plainName(t, x.spentFor || payer), plainName(t, x.createdBy || payer)];
+  };
+  const lines = [head.map(q).join(",")].concat(xs.map(x => [x.date, x.category, x.description, x.merchant, ...whoCells(x), x.payment, x.currency,
     fmt(x.amountMinor, x.exp, false), x.rate, fmt(x.baseMinor, t.baseExp, false), x.reimbursable ? "Yes" : "No", x.receipt ? "Yes" : "No", (x.receipts || []).length, x.notes].map(q).join(",")));
   const total = xs.reduce((s, x) => s + BigInt(x.baseMinor), 0n);
-  lines.push(["","","TOTAL","","","","","",fmt(total, t.baseExp, false),"","","",""].map(q).join(","));
+  const blank = n => Array(n).fill("");
+  const amountCol = head.indexOf(`Amount ${t.baseCurrency}`);
+  lines.push([...blank(2), "TOTAL", ...blank(amountCol - 3), fmt(total, t.baseExp, false), ...blank(head.length - amountCol - 1)].map(q).join(","));
+  if (shared){
+    const totals = personTotals(t, xs);
+    lines.push("", ["BY PERSON", `Paid ${t.baseCurrency}`, `Owed back ${t.baseCurrency}`, `Spent on them ${t.baseCurrency}`].map(q).join(","));
+    for (const [id, r] of totals) lines.push([plainName(t, id), fmt(r.paid, t.baseExp, false), fmt(r.owed, t.baseExp, false), fmt(r.spent, t.baseExp, false)].map(q).join(","));
+    lines.push(q("Shared costs are split equally; any leftover smallest unit goes to the first person listed."));
+  }
   const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv" });
   const slug = t.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "trip";
   const a = document.createElement("a");
@@ -542,18 +663,18 @@ async function init(){
     const ed = e.target.closest("[data-edit]"), dl = e.target.closest("[data-del]"), v = e.target.closest("[data-view]");
     if (ed){ const x = state.expenses.find(x => x.id === ed.dataset.edit); if (x) fillExpenseForm(x); }
     if (dl) armConfirm(dl, "Confirm delete", () => deleteExpense(dl.dataset.del));
-    if (v){ const x = state.expenses.find(x => x.id === v.dataset.view); if (x) openViewer(x.receipts || [], +v.dataset.idx); }
+    if (v){ const x = state.expenses.find(x => x.id === v.dataset.view); if (x) openViewer(x.receipts || [], +v.dataset.idx, x); }
   });
   ["xFiles","xCamera"].forEach(id => $(id).addEventListener("change", e => { const f = [...e.target.files]; e.target.value = ""; if (f.length) addFiles(f); }));
   $("xThumbs").addEventListener("click", async e => {
     const rm = e.target.closest("[data-rm]");
     if (rm){
       const [r] = rx.list.splice(+rm.dataset.rm, 1);
-      if (r){ if (rx.session.has(r.id)){ rx.session.delete(r.id); await store.del("files", r.id); } else rx.removals.push(r.id); }
+      if (r){ if (rx.session.has(r.id)){ rx.session.delete(r.id); await store.del("files", r.id); } else rx.removals.push(r); }
       renderFormThumbs(); return;
     }
     const v = e.target.closest("[data-view]");
-    if (v) openViewer(rx.list, +v.dataset.idx);
+    if (v) openViewer(rx.list, +v.dataset.idx, state.expenses.find(x => x.id === state.editingExpenseId) || null);
   });
   // Viewer
   $("lbClose").addEventListener("click", closeViewer);
@@ -575,11 +696,51 @@ async function init(){
     e.preventDefault(); $("siErr").textContent = "";
     if (!navigator.onLine){ $("siErr").textContent = "You're offline. Connect to the internet to sign in."; return; }
     const btn = $("siBtn"); btn.disabled = true;
-    try { await sync.signIn($("siEmail").value, $("siPass").value); $("siPass").value = ""; toast("Signed in. Syncing…"); await sync.refreshStatus(); }
+    try { await sync.signIn($("siEmail").value, $("siPass").value); $("siPass").value = ""; toast("Signed in. Syncing…"); formTripId = null; await load(); await sync.refreshStatus(); }
     catch (err) { $("siErr").textContent = err.message || "Couldn't sign in."; }
     finally { btn.disabled = false; renderSheet(); }
   });
-  $("signOutBtn").addEventListener("click", async () => { await sync.signOut(); toast("Signed out on this device"); renderSheet(); });
+  $("signOutBtn").addEventListener("click", async () => { await sync.signOut(); toast("Signed out on this device"); await load(); renderSheet(); });
+  $("pwForm").addEventListener("submit", async e => {
+    e.preventDefault(); $("pwErr").textContent = "";
+    const a = $("pwNew").value, b = $("pwNew2").value;
+    if (a.length < 8){ $("pwErr").textContent = "Use at least 8 characters."; return; }
+    if (a !== b){ $("pwErr").textContent = "The two passwords don't match."; return; }
+    const btn = $("pwBtn"); btn.disabled = true;
+    try { await sync.changePassword(a); $("pwNew").value = $("pwNew2").value = ""; toast("Password changed"); }
+    catch (err) { $("pwErr").textContent = err.message || "Couldn't change the password."; }
+    finally { btn.disabled = false; }
+  });
+  // People on the trip (owner only can change)
+  $("xPaidBy").addEventListener("change", () => {
+    const prev = $("xPaidBy").dataset.prev;
+    if ($("xFor").value === prev) $("xFor").value = $("xPaidBy").value; // "For" follows the payer unless set separately
+    $("xPaidBy").dataset.prev = $("xPaidBy").value;
+  });
+  $("addMemberForm").addEventListener("submit", async e => {
+    e.preventDefault(); $("memberErr").textContent = "";
+    const t = currentTrip(); if (!t) return;
+    const email = $("mEmail").value.trim(), name = $("mName").value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ $("memberErr").textContent = "Enter their login email, e.g. name@example.com"; return; }
+    const btn = $("mAdd"); btn.disabled = true; btn.textContent = "Adding…";
+    try { await sync.addMember(t.id, email, name); $("mEmail").value = $("mName").value = ""; toast(`${name || email} can now add expenses to this trip`); await load(); }
+    catch (err) { $("memberErr").textContent = err.message; }
+    finally { btn.disabled = false; btn.textContent = "Add to trip"; }
+  });
+  $("memberList").addEventListener("click", async e => {
+    const t = currentTrip(); if (!t) return;
+    const rn = e.target.closest("[data-rename]"), rm = e.target.closest("[data-remove]");
+    $("memberErr").textContent = "";
+    if (rn){
+      const input = $("memberList").querySelector(`[data-name-for="${CSS.escape(rn.dataset.rename)}"]`);
+      try { await sync.renameMember(t.id, rn.dataset.rename, input.value); toast("Name saved"); await load(); }
+      catch (err) { $("memberErr").textContent = err.message; }
+    }
+    if (rm) armConfirm(rm, "Remove from trip?", async () => {
+      try { await sync.removeMember(t.id, rm.dataset.remove); toast("Removed. Their expenses stay in the accounts."); await load(); }
+      catch (err) { $("memberErr").textContent = err.message; }
+    });
+  });
   $("configForm").addEventListener("submit", e => {
     e.preventDefault();
     const url = $("cfUrl").value.trim(), key = $("cfKey").value.trim();

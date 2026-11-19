@@ -77,5 +77,15 @@ export function fmt(minor, exp, group = true) {
   return (neg ? (group ? "−" : "-") : "") + i + (exp ? "." + f : "");
 }
 
+/** Split an amount of minor units into n equal parts that add up exactly to the total.
+ *  Leftover units (when it doesn't divide evenly) go one each to the first parts. */
+export function splitEvenly(total, n) {
+  total = BigInt(total);
+  if (n <= 0) return [];
+  const neg = total < 0n, a = neg ? -total : total, N = BigInt(n);
+  const base = a / N, rem = Number(a % N);
+  return Array.from({ length: n }, (_, i) => { const v = base + (i < rem ? 1n : 0n); return neg ? -v : v; });
+}
+
 export const money = (minor, code, exp) => `${code} ${fmt(minor, exp)}`;
 export const unitText = exp => exp === 0 ? "1" : "0." + "0".repeat(exp - 1) + "1";
